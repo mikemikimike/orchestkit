@@ -18,6 +18,27 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: ChangelogEntry[] = [
   {
+    "version": "10.2.0",
+    "date": "2026-10-25",
+    "compareUrl": "https://github.com/yonatangross/orchestkit/compare/v10.1.1...v10.2.0",
+    "sections": [
+      {
+        "type": "added",
+        "heading": "Features",
+        "items": [
+          "**prompt-enhancer:** short stack-aware rewrites with a prompt-cached catalog ([#4857](https://github.com/yonatangross/orchestkit/issues/4857)) ([2a64faf](https://github.com/yonatangross/orchestkit/commit/2a64faf888aeaf2068e9f8b402efcdfaf1e4ff55))"
+        ]
+      },
+      {
+        "type": "fixed",
+        "heading": "Bug Fixes",
+        "items": [
+          "**secrets-veil:** widen the scan-time scaling bound to 31.6x ([#4898](https://github.com/yonatangross/orchestkit/issues/4898)) ([0e364d5](https://github.com/yonatangross/orchestkit/commit/0e364d5430bffd44785909ef56be58084e5c5f09))"
+        ]
+      }
+    ]
+  },
+  {
     "version": "10.1.1",
     "date": "2026-10-24",
     "compareUrl": "https://github.com/yonatangross/orchestkit/compare/v10.1.0...v10.1.1",
