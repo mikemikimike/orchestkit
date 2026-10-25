@@ -34,7 +34,12 @@ vi.mock('../../lib/session-identity-state.js', () => ({
 }));
 
 import { unifiedPromptDispatcher, registeredHookNames } from '../../prompt/unified-dispatcher.js';
-import { writeWorktreeAdvisory } from '../../lib/worktree-advisory.js';
+import { MAX_PROMPT_LENGTH } from '../../lib/prompt-guards.js';
+import {
+  acknowledgeWorktreeAdvisories,
+  readWorktreeAdvisories,
+  writeWorktreeAdvisory,
+} from '../../lib/worktree-advisory.js';
 import type { HookInput } from '../../types.js';
 import { createTestContext } from '../fixtures/test-context.js';
 
@@ -102,6 +107,26 @@ describe('prompt/unified-dispatcher consolidation', () => {
     expect(result.hookSpecificOutput).toBeUndefined();
   });
 
+  it('checks the goal budget before skipping oversized prompt analysis', () => {
+    const stateDir = join(projectDir, '.claude', 'state');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, 'goal-budget-tripped.json'),
+      JSON.stringify({ session_id: 'large-goal-session', reason: 'tokens_cap' }),
+    );
+
+    const prompt = `/goal ${'continue '.repeat(Math.ceil(MAX_PROMPT_LENGTH / 9))}`;
+    const result = unifiedPromptDispatcher(
+      input(prompt, 'large-goal-session'),
+      createTestContext({ projectDir, sessionId: 'large-goal-session' }),
+    );
+
+    expect(prompt.length).toBeGreaterThan(MAX_PROMPT_LENGTH);
+    expect(result.continue).toBe(false);
+    expect(result.stopReason).toContain('budget tripped');
+    expect(result.stopReason).toContain('tokens_cap');
+  });
+
   it('delivers and consumes a deferred worktree advisory', () => {
     const sessionId = 'advisory-session';
     expect(writeWorktreeAdvisory('Use the sparse paths for this worktree.', 'feature/demo', projectDir, sessionId)).toBe(true);
@@ -114,5 +139,48 @@ describe('prompt/unified-dispatcher consolidation', () => {
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput?.additionalContext).toContain('Use the sparse paths for this worktree.');
     expect(existsSync(join(projectDir, '.claude', 'state', 'worktree-advisory-feature-demo.advisory-session.md'))).toBe(false);
+  });
+
+  it('delivers an advisory even when it exceeds the prompt context budget', () => {
+    const sessionId = 'large-advisory-session';
+    process.env.CLAUDE_EFFORT = 'low';
+    const advisory = `Sparse paths: ${'src/important/path, '.repeat(100)}`;
+    expect(writeWorktreeAdvisory(advisory, 'feature/large', projectDir, sessionId)).toBe(true);
+
+    const result = unifiedPromptDispatcher(
+      input('continue', sessionId),
+      createTestContext({ projectDir, sessionId }),
+    );
+
+    expect(result.hookSpecificOutput?.additionalContext).toContain(advisory.trimEnd());
+    expect(existsSync(join(projectDir, '.claude', 'state', 'worktree-advisory-feature-large.large-advisory-session.md'))).toBe(false);
+  });
+
+  it('delivers identical one-time advisories on later worktree events', () => {
+    const sessionId = 'repeat-advisory-session';
+    const advisory = 'Use the workspace source paths.';
+    const context = createTestContext({ projectDir, sessionId });
+
+    expect(writeWorktreeAdvisory(advisory, 'feature/repeat', projectDir, sessionId)).toBe(true);
+    const first = unifiedPromptDispatcher(input('continue', sessionId), context);
+    expect(first.hookSpecificOutput?.additionalContext).toContain(advisory);
+
+    expect(writeWorktreeAdvisory(advisory, 'feature/repeat', projectDir, sessionId)).toBe(true);
+    const second = unifiedPromptDispatcher(input('continue', sessionId), context);
+    expect(second.hookSpecificOutput?.additionalContext).toContain(advisory);
+    expect(existsSync(join(projectDir, '.claude', 'state', 'worktree-advisory-feature-repeat.repeat-advisory-session.md'))).toBe(false);
+  });
+
+  it('keeps advisory updates written after a delivery snapshot', () => {
+    const sessionId = 'updated-advisory-session';
+    expect(writeWorktreeAdvisory('Original advice.', 'feature/update', projectDir, sessionId)).toBe(true);
+
+    const pending = readWorktreeAdvisories(projectDir, sessionId);
+    if (!pending) throw new Error('Expected a pending advisory snapshot');
+
+    expect(writeWorktreeAdvisory('Updated advice.', 'feature/update', projectDir, sessionId)).toBe(true);
+    acknowledgeWorktreeAdvisories(projectDir, pending);
+
+    expect(readWorktreeAdvisories(projectDir, sessionId)?.content).toBe('Updated advice.');
   });
 });
