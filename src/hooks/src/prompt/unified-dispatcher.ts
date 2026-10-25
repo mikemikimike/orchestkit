@@ -9,7 +9,7 @@
  * handoff injector plus every-turn silent analytics, with a single
  * additionalContext output.
  *
- * 5 hooks managed by this dispatcher:
+ * 7 hooks managed by this dispatcher:
  *
  * Once-per-session (file-based flag tracking):
  * - handoff-injector (producesContext: true)
@@ -68,6 +68,10 @@ import { handoffInjector } from './handoff-injector.js';
 import { executorRouteNudge } from './executor-route-nudge.js';
 import { visualStyleNudge } from './visual-style-nudge.js';
 import { multiStepTaskNudge } from './multi-step-task-nudge.js';
+// M140 G3 (#1790) — synchronous /goal tracking and budget brake
+import { goalTracker } from './goal-tracker.js';
+// M119 PR-2 (#1794 follow-up) — deferred worktree advisory delivery
+import { worktreeAdvisoryConsumer } from './worktree-advisory-consumer.js';
 import { NOOP_CTX } from '../lib/context.js';
 
 // -----------------------------------------------------------------------------
@@ -92,6 +96,8 @@ interface PromptHookConfig {
   producesContext: boolean;
   /** If true, this hook runs only once per session (file-based flag tracking) */
   runOnce?: boolean;
+  /** If true, a continue:false result must stop the prompt immediately. */
+  blocksPrompt?: boolean;
 }
 
 // -----------------------------------------------------------------------------
@@ -99,7 +105,7 @@ interface PromptHookConfig {
 // -----------------------------------------------------------------------------
 
 /**
- * Registry of 5 UserPromptSubmit hooks managed by this dispatcher.
+ * Registry of 7 UserPromptSubmit hooks managed by this dispatcher.
  *
  * Order matters for context producers — higher priority first.
  * runOnce hooks execute only on the first turn (file-based session flag).
@@ -108,6 +114,15 @@ interface PromptHookConfig {
  * where they materialize rules files BEFORE CC loads instructions.
  */
 const HOOKS: PromptHookConfig[] = [
+  // Must stay synchronous: the budget brake has to intercept /goal before the
+  // model sees it. A block is returned directly instead of being treated as
+  // context or silently discarded.
+  { name: 'goal-tracker', fn: goalTracker, producesContext: false, blocksPrompt: true },
+
+  // Deferred WorktreeCreate advisories are consumed here so they share the
+  // dispatcher's single Node process and consolidated UserPromptSubmit output.
+  { name: 'worktree-advisory-consumer', fn: worktreeAdvisoryConsumer, producesContext: true },
+
   // --- Once-per-session hooks (run on first turn only, file-flag gated) ---
   { name: 'handoff-injector', fn: handoffInjector, producesContext: true, runOnce: true },
 
@@ -448,6 +463,13 @@ export function unifiedPromptDispatcher(input: HookInput, ctx: HookContext = NOO
       }
 
       const result = hook.fn(input, ctx);
+
+      // goal-tracker owns the synchronous /goal budget brake. Preserve the
+      // top-level block envelope exactly; it must reach Claude Code before the
+      // prompt is processed and must not be folded into additionalContext.
+      if (hook.blocksPrompt && !result.continue) {
+        return result;
+      }
 
       // Mark once-per-session hook as done after successful execution
       if (hook.runOnce && sessionId) {
