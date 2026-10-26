@@ -56,7 +56,9 @@ Note that `subagent-start` and `subagent-stop` share the `subagent.mjs` bundle. 
 
 ### Bundle Inventory
 
-| Bundle | Size | Hook Count | Events | Key Contents |
+The inventory below counts the 155 internal handlers compiled into the bundles. The registry total above counts 161 registered hooks, including registrations that share those handlers.
+
+| Bundle | Size | Internal Handler Count | Events | Key Contents |
 |--------|------|------------|--------|--------------|
 | `permission.mjs` | 8 KB | 3 | PermissionRequest | auto-approve-safe-bash, auto-approve-project-writes, learning-tracker |
 | `pretool.mjs` | 48 KB | 33 | PreToolUse | dangerous-command-blocker, file-guard, 3 unified dispatchers, git-validator |
