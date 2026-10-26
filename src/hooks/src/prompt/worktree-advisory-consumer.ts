@@ -27,6 +27,7 @@
 import type { HookInput, HookResult, HookContext } from '../types.js';
 import { outputSilentSuccess, outputPromptContext } from '../lib/common.js';
 import { NOOP_CTX } from '../lib/context.js';
+import { limitAdditionalContext } from '../lib/additional-context.js';
 import {
   acknowledgeWorktreeAdvisories,
   readWorktreeAdvisories,
@@ -51,10 +52,10 @@ export function worktreeAdvisoryConsumerForDispatcher(
   return runWorktreeAdvisoryConsumer(input, ctx, true);
 }
 
-export function acknowledgeWorktreeAdvisoryDelivery(result: HookResult): void {
+export function acknowledgeWorktreeAdvisoryDelivery(result: HookResult, includedContext: string): void {
   const delivery = pendingDeliveries.get(result);
   if (!delivery) return;
-  acknowledgeWorktreeAdvisories(delivery.projectDir, delivery.pending);
+  acknowledgeWorktreeAdvisories(delivery.projectDir, delivery.pending, includedContext);
   pendingDeliveries.delete(result);
 }
 
@@ -78,8 +79,9 @@ function runWorktreeAdvisoryConsumer(
 
   ctx.log(HOOK_NAME, `Injecting deferred worktree advisory (${pending.content.length} chars)`);
   if (!deferAcknowledgement) {
-    acknowledgeWorktreeAdvisories(projectDir, pending);
-    return outputPromptContext(pending.content);
+    const includedContext = limitAdditionalContext(pending.content);
+    acknowledgeWorktreeAdvisories(projectDir, pending, includedContext);
+    return outputPromptContext(includedContext);
   }
 
   const result = outputPromptContext(pending.content);

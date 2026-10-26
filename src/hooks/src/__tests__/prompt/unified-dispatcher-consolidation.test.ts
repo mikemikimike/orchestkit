@@ -34,6 +34,7 @@ vi.mock('../../lib/session-identity-state.js', () => ({
 }));
 
 import { unifiedPromptDispatcher, registeredHookNames } from '../../prompt/unified-dispatcher.js';
+import { MAX_ADDITIONAL_CONTEXT_CHARS, MAX_ADDITIONAL_CONTEXT_LINES } from '../../lib/additional-context.js';
 import { MAX_PROMPT_LENGTH } from '../../lib/prompt-guards.js';
 import {
   acknowledgeWorktreeAdvisories,
@@ -154,6 +155,60 @@ describe('prompt/unified-dispatcher consolidation', () => {
 
     expect(result.hookSpecificOutput?.additionalContext).toContain(advisory.trimEnd());
     expect(existsSync(join(projectDir, '.claude', 'state', 'worktree-advisory-feature-large.large-advisory-session.md'))).toBe(false);
+  });
+
+  it('retains the undelivered advisory remainder when the character cap is reached', () => {
+    const sessionId = 'capped-advisory-session';
+    const first = 'A'.repeat(10);
+    const second = 'B'.repeat(8500);
+    const secondFile = join(projectDir, '.claude', 'state', 'worktree-advisory-feature-second.capped-advisory-session.md');
+    const deliveredSecondLength = MAX_ADDITIONAL_CONTEXT_CHARS - first.length - '\n\n---\n\n'.length;
+
+    expect(writeWorktreeAdvisory(first, 'feature/first', projectDir, sessionId)).toBe(true);
+    expect(writeWorktreeAdvisory(second, 'feature/second', projectDir, sessionId)).toBe(true);
+
+    const result = unifiedPromptDispatcher(
+      input('continue', sessionId),
+      createTestContext({ projectDir, sessionId }),
+    );
+    const delivered = result.hookSpecificOutput?.additionalContext ?? '';
+
+    expect(delivered.length).toBe(MAX_ADDITIONAL_CONTEXT_CHARS);
+    expect(delivered).toBe(`${first}\n\n---\n\n${second.slice(0, deliveredSecondLength)}`);
+    expect(existsSync(join(projectDir, '.claude', 'state', 'worktree-advisory-feature-first.capped-advisory-session.md'))).toBe(false);
+    expect(readWorktreeAdvisories(projectDir, sessionId)?.content).toBe(second.slice(deliveredSecondLength));
+
+    const next = unifiedPromptDispatcher(
+      input('continue again', sessionId),
+      createTestContext({ projectDir, sessionId }),
+    );
+    expect(next.hookSpecificOutput?.additionalContext).toBe(second.slice(deliveredSecondLength));
+    expect(existsSync(secondFile)).toBe(false);
+  });
+
+  it('retains advisories after the 200-line cap for a later prompt', () => {
+    const sessionId = 'line-capped-advisory-session';
+    const lines = Array.from({ length: MAX_ADDITIONAL_CONTEXT_LINES + 5 }, (_, index) => `Advice line ${index + 1}`);
+    const advisory = lines.join('\n');
+    const file = join(projectDir, '.claude', 'state', 'worktree-advisory-feature-lines.line-capped-advisory-session.md');
+    expect(writeWorktreeAdvisory(advisory, 'feature/lines', projectDir, sessionId)).toBe(true);
+
+    const result = unifiedPromptDispatcher(
+      input('continue', sessionId),
+      createTestContext({ projectDir, sessionId }),
+    );
+    const delivered = result.hookSpecificOutput?.additionalContext ?? '';
+
+    expect(delivered.split('\n')).toHaveLength(MAX_ADDITIONAL_CONTEXT_LINES);
+    expect(delivered).toBe(lines.slice(0, MAX_ADDITIONAL_CONTEXT_LINES).join('\n'));
+    expect(readWorktreeAdvisories(projectDir, sessionId)?.content).toBe(lines.slice(MAX_ADDITIONAL_CONTEXT_LINES).join('\n'));
+
+    const next = unifiedPromptDispatcher(
+      input('continue again', sessionId),
+      createTestContext({ projectDir, sessionId }),
+    );
+    expect(next.hookSpecificOutput?.additionalContext).toBe(lines.slice(MAX_ADDITIONAL_CONTEXT_LINES).join('\n'));
+    expect(existsSync(file)).toBe(false);
   });
 
   it('delivers identical one-time advisories on later worktree events', () => {

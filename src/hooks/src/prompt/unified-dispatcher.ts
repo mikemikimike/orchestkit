@@ -41,6 +41,12 @@ import {
   extractContext,
   fnv1aHash,
 } from '../lib/common.js';
+import {
+  countAdditionalContextLineBreaks,
+  limitAdditionalContext,
+  MAX_ADDITIONAL_CONTEXT_CHARS,
+  MAX_ADDITIONAL_CONTEXT_LINES,
+} from '../lib/additional-context.js';
 import { isImageOrBinaryPrompt, MAX_PROMPT_LENGTH } from '../lib/prompt-guards.js';
 import { detectEffortLevel, effortTokenBudget, DEFAULT_EFFORT_LEVEL } from '../lib/effort-detector.js';
 import { trackTokenUsage } from '../lib/token-tracker.js';
@@ -104,7 +110,7 @@ interface PromptHookConfig {
   /** If true, budget/noise filters cannot omit this context from the response. */
   mustDeliverContext?: boolean;
   /** Called only after the final dispatcher response contains this context. */
-  onContextDelivered?: (result: HookResult) => void;
+  onContextDelivered?: (result: HookResult, includedContext: string) => void;
 }
 
 // -----------------------------------------------------------------------------
@@ -154,6 +160,8 @@ const HOOKS: PromptHookConfig[] = [
   { name: 'multi-step-task-nudge', fn: multiStepTaskNudge, producesContext: true },
   // antipattern-warning removed (#972) — now a type:prompt hook in hooks.json
 ];
+
+const CONTEXT_SEPARATOR = '\n\n---\n\n';
 
 /** Exposed for testing */
 export const registeredHookNames = () => HOOKS.map(h => h.name);
@@ -447,11 +455,11 @@ export function unifiedPromptDispatcher(input: HookInput, ctx: HookContext = NOO
   // CC 2.1.94 changed default effort from 'medium' → 'high' for most user tiers.
   const effort = detectEffortLevel(input);
   const tokenBudget = effortTokenBudget(effort, MAX_OUTPUT_TOKENS);
-  const deliveredContexts: Array<{ hook: PromptHookConfig; result: HookResult }> = [];
+  const deliveredContexts: Array<{ hook: PromptHookConfig; result: HookResult; includedContext: string }> = [];
   const acknowledgeDeliveredContexts = (): void => {
-    for (const { hook, result } of deliveredContexts) {
+    for (const { hook, result, includedContext } of deliveredContexts) {
       try {
-        hook.onContextDelivered?.(result);
+        hook.onContextDelivered?.(result, includedContext);
       } catch (error) {
         ctx.log(HOOK_NAME, `${hook.name}: failed to acknowledge delivered context: ${error}`, 'warn');
       }
@@ -534,11 +542,28 @@ export function unifiedPromptDispatcher(input: HookInput, ctx: HookContext = NOO
         ctx.log(HOOK_NAME, `Delivering ${hook.name} above the shared context budget (${contextTokens}t, cap=${tokenBudget}t)`);
       }
 
-      contextParts.push(context);
-      totalTokens += contextTokens;
-      if (hook.onContextDelivered) deliveredContexts.push({ hook, result });
+      const currentContext = contextParts.join(CONTEXT_SEPARATOR);
+      const separator = currentContext ? CONTEXT_SEPARATOR : '';
+      const outputPrefix = `${currentContext}${separator}`;
+      const includedContext = limitAdditionalContext(
+        context,
+        MAX_ADDITIONAL_CONTEXT_CHARS - outputPrefix.length,
+        MAX_ADDITIONAL_CONTEXT_LINES - countAdditionalContextLineBreaks(outputPrefix),
+      );
+      if (!includedContext) {
+        ctx.log(HOOK_NAME, `${hook.name}: no additionalContext capacity remains`);
+        continue;
+      }
+      if (includedContext.length < context.length) {
+        ctx.log(HOOK_NAME, `${hook.name}: additionalContext capped at ${includedContext.length} of ${context.length} chars`);
+      }
 
-      ctx.log(HOOK_NAME, `${hook.name}: +${contextTokens}t (total: ${totalTokens}t)`);
+      const includedTokens = estimateTokenCount(includedContext);
+      contextParts.push(includedContext);
+      totalTokens += includedTokens;
+      if (hook.onContextDelivered) deliveredContexts.push({ hook, result, includedContext });
+
+      ctx.log(HOOK_NAME, `${hook.name}: +${includedTokens}t (total: ${totalTokens}t)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.log(HOOK_NAME, `${hook.name} failed: ${message}`, 'warn');
@@ -547,7 +572,7 @@ export function unifiedPromptDispatcher(input: HookInput, ctx: HookContext = NOO
 
   if (skipTextAnalysis) {
     if (contextParts.length === 0) return outputSilentSuccess();
-    const output = outputPromptContext(contextParts.join('\n\n---\n\n'));
+    const output = outputPromptContext(contextParts.join(CONTEXT_SEPARATOR));
     acknowledgeDeliveredContexts();
     return output;
   }
@@ -591,7 +616,7 @@ export function unifiedPromptDispatcher(input: HookInput, ctx: HookContext = NOO
   }
 
   // Single consolidated output
-  const consolidated = contextParts.join('\n\n---\n\n');
+  const consolidated = contextParts.join(CONTEXT_SEPARATOR);
 
   // Delta detection: skip injection if consolidated output is unchanged from last turn (#token-reduction)
   // Note: the title is still emitted on delta-skip turns because it's cheap

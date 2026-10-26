@@ -146,16 +146,38 @@ export function readWorktreeAdvisories(projectDir: string, sessionId = ''): Pend
 export function acknowledgeWorktreeAdvisories(
   projectDir: string,
   pending: PendingWorktreeAdvisories,
+  deliveredContent = pending.content,
 ): void {
-  if (!projectDir) return;
+  if (!projectDir || !deliveredContent || !pending.content.startsWith(deliveredContent)) return;
   const dir = join(projectDir, ADVISORY_DIR);
-  for (const file of pending.files) {
-    const fullPath = join(dir, file.name);
-    try {
-      if (readFileSync(fullPath, 'utf8') === file.originalContent) unlinkSync(fullPath);
-    } catch {
-      // Preserve files that changed or could not be read/deleted for a retry.
+  let offset = 0;
+  for (const [index, file] of pending.files.entries()) {
+    const deliveredLength = Math.min(file.content.length, Math.max(0, deliveredContent.length - offset));
+    if (deliveredLength > 0) {
+      const fullPath = join(dir, file.name);
+      try {
+        if (readFileSync(fullPath, 'utf8') === file.originalContent) {
+          if (deliveredLength === file.content.length) {
+            unlinkSync(fullPath);
+          } else {
+            let remainderStart = deliveredLength;
+            if (file.content[remainderStart] === '\r' && file.content[remainderStart + 1] === '\n') {
+              remainderStart += 2;
+            } else if (file.content[remainderStart] === '\r' || file.content[remainderStart] === '\n') {
+              remainderStart++;
+            }
+            const remainder = file.content.slice(remainderStart) + file.originalContent.slice(file.content.length);
+            if (remainder.trim()) writeFileSync(fullPath, remainder, 'utf8');
+            else unlinkSync(fullPath);
+          }
+        }
+      } catch {
+        // Preserve files that changed or could not be read/deleted for a retry.
+      }
     }
+
+    offset += file.content.length;
+    if (index < pending.files.length - 1) offset += '\n\n---\n\n'.length;
   }
 }
 
